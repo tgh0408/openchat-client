@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-electron
+test-results
+playwright-report
+/database/
+backups
+.runtime
+.cache
+package-lock.json
+*.log

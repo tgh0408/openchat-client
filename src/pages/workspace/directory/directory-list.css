@@ -1,0 +1,131 @@
+.friend-directory-section {
+  border-top: 1px solid #e2e2e4;
+}
+
+.friend-directory-section:first-child {
+  border-top: 0;
+}
+
+.friend-directory-section-toggle {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 40px;
+  gap: 7px;
+  padding: 0 17px;
+  border: 0;
+  background: transparent;
+  color: #303034;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.friend-directory-section-toggle:hover {
+  background: #e2e2e5;
+}
+
+.friend-directory-section-count {
+  margin-left: auto;
+  color: #96969d;
+  font-size: 13px;
+}
+
+.friend-directory-unread {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-left: auto;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #fa5151;
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.friend-directory-section-content {
+  padding-bottom: 6px;
+}
+
+.friend-directory-group-row,
+.friend-directory-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 58px;
+  gap: 9px;
+  padding: 7px 12px 7px 35px;
+  border: 0;
+  background: transparent;
+  color: #242428;
+  text-align: left;
+}
+
+.friend-directory-group-row,
+.friend-directory-row {
+  cursor: pointer;
+}
+
+.friend-directory-row:hover,
+.friend-directory-group-row:hover {
+  background: #e2e2e5;
+}
+
+.friend-directory-row--selected,
+.friend-directory-row--selected:hover {
+  background: #c9e9d7;
+}
+
+.friend-directory-avatar {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  overflow: hidden;
+  border-radius: 7px;
+  background: #b8c8d1;
+}
+
+.friend-directory-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.friend-directory-avatar {
+  color: #fff;
+  font-size: 16px;
+}
+
+.friend-directory-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+}
+
+.friend-directory-letter {
+  height: 31px;
+  padding: 8px 35px 0;
+  color: #75757b;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.friend-directory-status {
+  margin: 14px 12px;
+  color: #96969d;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+}
+
+.friend-directory-status--error {
+  color: #b74c42;
+}
