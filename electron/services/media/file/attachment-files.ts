@@ -95,7 +95,11 @@ export const createAttachmentFileStore = (
       request.messageId,
     ).content;
     const file = parseFileContent(content);
-    if (!file || !/^[1-9]\d{0,63}$/.test(access.owner))
+    if (
+      !file ||
+      !/^[1-9]\d{0,63}$/.test(access.owner) ||
+      !/^[a-f0-9]{16}$/.test(access.serverHash)
+    )
       throw new Error('文件消息不可用');
     const version = generation;
     /** 删除消息或切换账号后立即停止读取和写入。 */
@@ -132,14 +136,15 @@ export const createAttachmentFileStore = (
     if (!relative) return null;
     const parts = relative.split('/');
     if (
-      parts.length !== 5 ||
+      parts.length !== 6 ||
       parts[0] !== 'file' ||
-      parts[1] !== item.access.owner ||
-      !/^\d{4}-\d{2}-\d{2}$/.test(parts[2]!) ||
-      parts[3] !== item.key ||
-      !parts[4] ||
-      /[\\/:*?"<>|\u0000-\u001f]/.test(parts[4]) ||
-      parts[4] === '..'
+      parts[1] !== item.access.serverHash ||
+      parts[2] !== item.access.owner ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(parts[3]!) ||
+      parts[4] !== item.key ||
+      !parts[5] ||
+      /[\\/:*?"<>|\u0000-\u001f]/.test(parts[5]) ||
+      parts[5] === '..'
     )
       throw new Error('文件缓存路径无效');
     const absolute = path.join(root, relative);
@@ -186,7 +191,11 @@ export const createAttachmentFileStore = (
       if (generation !== version) throw new Error('本机文件同步已取消');
     };
     current();
-    if (!/^[1-9]\d{0,63}$/.test(access.owner)) throw new Error('文件账号无效');
+    if (
+      !/^[1-9]\d{0,63}$/.test(access.owner) ||
+      !/^[a-f0-9]{16}$/.test(access.serverHash)
+    )
+      throw new Error('文件账号无效');
     const key = createHash('sha256').update(file.url).digest('hex');
     if (await cached({ current, access, key, size: file.fileSize })) return;
     current();
@@ -198,7 +207,7 @@ export const createAttachmentFileStore = (
         throw new Error('原文件已变化');
       const date = new Date();
       const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-      const parts = ['file', access.owner, day, key];
+      const parts = ['file', access.serverHash, access.owner, day, key];
       let dir = root;
       for (const part of parts) {
         current();
@@ -287,7 +296,13 @@ export const createAttachmentFileStore = (
       const date = new Date();
       const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
       const safeName = safeAttachmentName(item.name);
-      const parts = ['file', item.access.owner, day, item.key];
+      const parts = [
+        'file',
+        item.access.serverHash,
+        item.access.owner,
+        day,
+        item.key,
+      ];
       let dir = root;
       for (const part of parts) {
         item.current();
@@ -340,7 +355,7 @@ export const createAttachmentFileStore = (
     const saved = await cached(item);
     if (saved) return saved;
     item.access.validateWrite();
-    const key = `${item.access.owner}:${item.key}`;
+    const key = `${item.access.serverHash}:${item.access.owner}:${item.key}`;
     let task = transfers.get(key);
     if (!task) {
       if (transfers.size >= 2) throw new Error('请等待其他文件下载完成');

@@ -154,7 +154,7 @@ const inspect = async (
 
 /** 文件发送保留本机来源，复用服务端分片状态和原 clientMsgId。 */
 export const createFileDraftStore = (
-  base: string | undefined,
+  getBase: () => string | undefined,
   clientId: string,
   files: Pick<ReturnType<typeof createAttachmentFileStore>, 'saveUploaded'>,
 ): FileDraftStore => {
@@ -330,7 +330,7 @@ export const createFileDraftStore = (
   ): Promise<Record<string, unknown>> => {
     validate();
     return requestApi(
-      { base, session, clientId, validateCurrent: validate },
+      { base: getBase(), session, clientId, validateCurrent: validate },
       {
         path: `/capi/oss/multipart/${endpoint}`,
         method: 'POST',
@@ -413,7 +413,7 @@ export const createFileDraftStore = (
       )
         throw new Error('本机文件来源无效');
       const remote = await requestCreateFileTemporary(
-        base,
+        getBase(),
         session,
         clientId,
         roomId,
@@ -429,7 +429,7 @@ export const createFileDraftStore = (
         current();
         saveRemoteMessages([remote]);
         await requestCompleteFileTemporary(
-          base,
+          getBase(),
           session,
           clientId,
           roomId,
@@ -640,7 +640,7 @@ export const createFileDraftStore = (
       await files.saveUploaded(content, source, current);
       current();
       await requestCompleteFileTemporary(
-        base,
+        getBase(),
         session,
         clientId,
         roomId,
@@ -668,7 +668,7 @@ export const createFileDraftStore = (
     markFileUploadCancelled(roomId, clientMsgId);
     active.get(`${roomId}:${clientMsgId}`)?.abort();
     await requestCreateFileTemporary(
-      base,
+      getBase(),
       session,
       clientId,
       roomId,
@@ -678,7 +678,7 @@ export const createFileDraftStore = (
     );
     validate();
     const message = await requestCancelTemporary(
-      base,
+      getBase(),
       session,
       clientId,
       roomId,

@@ -24,6 +24,8 @@ import {
   listConversations,
   setGroupRemoved,
   getContact,
+  hideConversation,
+  showConversation,
 } from '../../../services/database/database';
 import { hydrateAvatarByUid } from '../../../services/chat/contact-avatar';
 import { flushConversationDeletions } from '../../../services/chat/conversation-sync';
@@ -31,6 +33,9 @@ import { flushConversationReads } from '../../../services/chat/conversation-read
 
 let notDisturbEpoch = 0;
 const notDisturbRequests = new Set<string>();
+let visibilityEpoch = 0;
+const hidingRooms = new Set<string>();
+const visibilityChanges = new Map<string, symbol>();
 
 /** 本机设置请求与读取重叠时保留已确认值，旧快照不能撤销刚完成的操作。 */
 const preserveNotDisturb = (room: ChatRoom, epoch: number): ChatRoom => {
@@ -115,6 +120,8 @@ export const syncRemoteContacts = async (
   await flushConversationReads();
   validateCurrent();
   const deletionEpoch = getConversationDeletionEpoch();
+  const currentVisibilityEpoch = visibilityEpoch;
+  if (hidingRooms.size > 0) throw new Error('会话正在隐藏，请稍后同步');
   const api = createAuthenticatedApiClient(validateCurrent);
   const preferenceEpoch = notDisturbEpoch;
   const rooms = await listRemoteContacts(api);
@@ -125,6 +132,8 @@ export const syncRemoteContacts = async (
   validateCurrent();
   if (deletionEpoch !== getConversationDeletionEpoch())
     throw new Error('会话已清空，请重新同步');
+  if (currentVisibilityEpoch !== visibilityEpoch)
+    throw new Error('会话隐藏状态已变化，请重新同步');
   for (const room of hydratedRooms)
     saveRemoteConversation(preserveNotDisturb(room, preferenceEpoch));
   return hydratedRooms.length;
@@ -147,9 +156,21 @@ export const hideUserConversation = async (
   roomId: string,
   validateCurrent: () => void,
 ): Promise<void> => {
-  const api = createAuthenticatedApiClient(validateCurrent);
-  await requestHideConversation(api, roomId);
   validateCurrent();
+  if (!getRemoteConversation(roomId)) throw new Error('远端会话不存在');
+  if (hidingRooms.has(roomId)) throw new Error('会话正在隐藏');
+  hidingRooms.add(roomId);
+  visibilityChanges.set(roomId, Symbol());
+  visibilityEpoch++;
+  try {
+    const api = createAuthenticatedApiClient(validateCurrent);
+    await requestHideConversation(api, roomId);
+    validateCurrent();
+    hideConversation(roomId);
+  } finally {
+    hidingRooms.delete(roomId);
+    visibilityEpoch++;
+  }
 };
 
 /** 只消费已在当前账号库提交的删除操作，不接受页面指定删除游标。 */
@@ -167,14 +188,26 @@ export const refreshConversationInfo = async (
   roomId: string,
   validateCurrent: () => void,
 ): Promise<ConversationSummary> => {
-  await flushConversationDeletions(validateCurrent);
-  const api = createAuthenticatedApiClient(validateCurrent);
+  const visibilityChange = visibilityChanges.get(roomId);
+  /** 隐藏期间不请求恢复详情，隐藏前的迟到详情不能重新显示会话。 */
+  const validateRefresh = (): void => {
+    validateCurrent();
+    if (
+      hidingRooms.has(roomId) ||
+      visibilityChanges.get(roomId) !== visibilityChange
+    )
+      throw new Error('会话隐藏状态已变化，请重新打开');
+  };
+  validateRefresh();
+  await flushConversationDeletions(validateRefresh);
+  validateRefresh();
+  const api = createAuthenticatedApiClient(validateRefresh);
   const preferenceEpoch = notDisturbEpoch;
   const room = preserveNotDisturb(
     await requestContactInfo(api, roomId),
     preferenceEpoch,
   );
-  validateCurrent();
+  validateRefresh();
   const previous = getRemoteConversation(roomId);
   setGroupRemoved(roomId, room.groupRemoved === true);
   if (room.groupRemoved) {
@@ -182,15 +215,16 @@ export const refreshConversationInfo = async (
     if (!previous) saveRemoteConversation({ ...room, name: '群聊' });
     else if (room.notDisturb !== undefined)
       setConversationNotDisturb(roomId, room.notDisturb);
+    showConversation(roomId);
     const cached = listConversations().find((item) => item.id === roomId);
     if (!cached) throw new Error('本地会话不存在');
     return { ...cached, groupRemoved: true, canRecallMembers: false };
   }
   const hydratedRoom = preserveNotDisturb(
-    await hydrateConversation(api, room, validateCurrent),
+    await hydrateConversation(api, room, validateRefresh),
     preferenceEpoch,
   );
-  validateCurrent();
+  validateRefresh();
   if (!previous) {
     saveRemoteConversation(hydratedRoom);
     const restored = listConversations().find(

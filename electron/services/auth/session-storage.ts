@@ -120,7 +120,6 @@ export const prepareLoginAccount = async (
 /** 校验解密身份并提取公开资料，历史账号名称本身不能作为登录凭据。 */
 const parseIdentity = (
   text: string,
-  base: string | undefined,
 ): {
   base: string;
   account: string;
@@ -134,7 +133,7 @@ const parseIdentity = (
     !value ||
     typeof value !== 'object' ||
     !('base' in value) ||
-    value.base !== parseAuthBase(base) ||
+    typeof value.base !== 'string' ||
     !('account' in value) ||
     typeof value.account !== 'string' ||
     !value.account.trim() ||
@@ -174,17 +173,20 @@ const decodeAccount = async (
   identityBuffer: Buffer,
   tokenBuffer: Buffer | null,
   base: string | undefined,
-): Promise<StoredLoginAccount> => {
+): Promise<StoredLoginAccount | null> => {
   const decrypted = await safeStorage.decryptStringAsync(identityBuffer);
-  const identity = parseIdentity(decrypted.result, base);
+  const identity = parseIdentity(decrypted.result);
+  // 其他服务器的账号仅跳过，切换地址不删除原有加密记录。
+  if (identity.base !== base) return null;
   const id = accountKey(identity.base, identity.uid);
   let session: AuthSession | null = null;
   let encryptedSession: Buffer | null = null;
   if (tokenBuffer) {
     try {
       const token = await safeStorage.decryptStringAsync(tokenBuffer);
-      const tokenIdentity = parseIdentity(token.result, base);
+      const tokenIdentity = parseIdentity(token.result);
       if (
+        tokenIdentity.base !== identity.base ||
         tokenIdentity.uid !== identity.uid ||
         tokenIdentity.account !== identity.account
       )
@@ -228,9 +230,10 @@ export const loadLoginAccounts = async (
   await requireEncryption();
   const accounts = new Map<string, StoredLoginAccount>();
   for (const record of records) {
-    let account: StoredLoginAccount;
+    let account: StoredLoginAccount | null;
     try {
       account = await decodeAccount(record.identity, record.session, base);
+      if (!account) continue;
       if (account.id !== record.id) throw new Error('账号标识不一致');
     } catch {
       deleteLoginAccount(record.id);

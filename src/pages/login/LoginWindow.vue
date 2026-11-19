@@ -7,6 +7,7 @@
           class="icon-button back-button"
           aria-label="返回登录"
           title="返回登录"
+          :disabled="savingSettings"
           @click="goBack"
         >
           <el-icon :size="15"><ArrowLeft /></el-icon>
@@ -21,6 +22,7 @@
           title="设置"
           :disabled="
             !storageReady ||
+            savingSettings ||
             authenticating ||
             switchingAccount ||
             validatingSession
@@ -44,7 +46,12 @@
       v-if="view === 'login'"
       :remembered-account="rememberedAccount"
       :storage-error="error || notice || ''"
-      :authorizing="authenticating || switchingAccount || validatingSession"
+      :authorizing="
+        authenticating ||
+        switchingAccount ||
+        validatingSession ||
+        savingSettings
+      "
       :initializing="!storageReady"
       :saved-session="session"
       :accounts="accounts"
@@ -98,9 +105,19 @@
           @change="persistDebugMode"
         />
       </div>
+      <section class="server-settings" aria-labelledby="server-settings-title">
+        <h2 id="server-settings-title">服务</h2>
+        <LoginServerSettings
+          :settings="serverSettings"
+          :disabled="savingSettings || !storageReady"
+          :persist="persistServerSettings"
+        />
+      </section>
       <div class="about-block">
         <span>关于</span>
-        <p>OpenChat <span>0.0.0</span></p>
+        <p>
+          OpenChat <span>{{ currentVersion }}</span>
+        </p>
         <p class="muted-caption">OpenChat 桌面客户端</p>
       </div>
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
@@ -124,13 +141,21 @@ import {
   RefreshRight,
   Setting,
 } from '@element-plus/icons-vue';
-import { readLocalSettings } from '../../services/storage/storage';
+import {
+  readLocalSettings,
+  readServerSettings,
+} from '../../services/storage/storage';
+import {
+  getServerSettings,
+  type ServerSettings,
+} from '../../../shared/runtime/server-settings';
 import {
   logoutSession,
   getLoginState,
   selectLoginAccount,
   authorizeSession,
   getAuthErrorMessage,
+  saveLoginServerSettings,
 } from '../../services/auth/auth';
 import type {
   AuthSession,
@@ -138,11 +163,14 @@ import type {
   SavedLoginAccount,
 } from '../../../shared/auth/auth';
 import LoginPanel from './LoginPanel.vue';
+import LoginServerSettings from './LoginServerSettings.vue';
+import packageJson from '../../../package.json';
 import type { StartupPhase } from '../../../shared/runtime/startup';
 import { startupPhaseOrder } from '../../../shared/runtime/startup';
 
 const props = defineProps<{ notice?: string }>();
 const emit = defineEmits<{ entered: [session: AuthSession] }>();
+const currentVersion = packageJson.version;
 type View = 'login' | 'settings' | 'closed';
 const view = ref<View>('login');
 const session = ref<AuthSession | null>(null);
@@ -159,6 +187,7 @@ const storageReady = ref(false);
 const startupPhase = ref<StartupPhase>('settings');
 const validatingSession = ref(false);
 const savingSettings = ref(false);
+const serverSettings = ref(getServerSettings());
 let restoreRequest = 0;
 let startupRestored = false;
 let unsubscribeStartup: (() => void) | undefined;
@@ -201,12 +230,14 @@ const restoreLocalData = async (checkServer: boolean = true): Promise<void> => {
   validatingSession.value = false;
   error.value = '';
   try {
-    const [state, settings] = await Promise.all([
+    const [state, settings, servers] = await Promise.all([
       getLoginState(false),
       readLocalSettings(),
+      readServerSettings(),
     ]);
     if (disposed || request !== restoreRequest) return;
     applyLoginState(state);
+    serverSettings.value = servers;
     remember.value = settings.rememberAccount;
     savedRemember = remember.value;
     debugMode.value = settings.debugMode;
@@ -358,6 +389,29 @@ const persistProfile = async (): Promise<void> => {
   }
 };
 
+/** 保存地址后同步对应服务器的账号入口，不自动授权或发起登录。 */
+const persistServerSettings = async (
+  value: ServerSettings,
+): Promise<ServerSettings> => {
+  if (savingSettings.value || !storageReady.value || validatingSession.value)
+    throw new Error('请等待当前操作完成');
+  savingSettings.value = true;
+  clearTimeout(expiryTimer);
+  try {
+    const saved = await saveLoginServerSettings(value);
+    if (disposed) return saved;
+    serverSettings.value = saved;
+    const state = await getLoginState(false);
+    if (!disposed) applyLoginState(state);
+    return saved;
+  } finally {
+    if (!disposed) {
+      savingSettings.value = false;
+      scheduleSessionExpiry();
+    }
+  }
+};
+
 /** 保存桌面调试偏好，失败时恢复开关状态。 */
 const persistDebugMode = async (): Promise<void> => {
   const desktop = window.desktop;
@@ -377,6 +431,7 @@ const persistDebugMode = async (): Promise<void> => {
 
 /** 从登录设置或关闭预览返回登录入口，已有会话也需点击确认进入。 */
 const goBack = (): void => {
+  if (savingSettings.value) return;
   error.value = '';
   view.value = 'login';
 };
@@ -476,3 +531,20 @@ onBeforeUnmount(() => {
   unsubscribeExpiry?.();
 });
 </script>
+
+<style scoped>
+.settings-panel {
+  height: calc(100% - 38px);
+  overflow-y: auto;
+}
+.server-settings {
+  margin-top: 20px;
+}
+.server-settings h2 {
+  margin: 0 0 12px;
+  color: #555;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
+</style>

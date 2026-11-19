@@ -40,7 +40,10 @@
         :error="error"
         :selected-uid="selectedUid"
         :search="search"
+        :file-assistant-disabled="fileAssistantDisabled"
+        :file-assistant-selected="fileAssistantSelected"
         @select="emit('select', $event)"
+        @select-files="emit('selectFiles')"
       />
     </div>
   </aside>
@@ -74,12 +77,15 @@ defineProps<{
   friendUnreadApplicationUids: ReadonlySet<string>;
   friendUnreadError: string;
   readOnly: boolean;
+  fileAssistantDisabled: boolean;
+  fileAssistantSelected: boolean;
   readApplications: (pageNo: number) => Promise<FriendApplicationPage>;
   selectedApplication: FriendApplication | null;
   applicationsRevision: number;
 }>();
 const emit = defineEmits<{
   (event: 'select', friend: Friend): void;
+  (event: 'selectFiles'): void;
   (event: 'selectGroup', group: GroupDirectoryItem): void;
   (event: 'selectApplication', application: FriendApplication): void;
   (event: 'applicationsLoaded', applications: FriendApplication[]): void;

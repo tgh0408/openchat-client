@@ -124,7 +124,7 @@ export interface VideoDraftStore {
 
 /** 主进程持有视频原生路径，页面仅获得临时随机句柄和受控预览地址。 */
 export const createVideoDraftStore = (
-  base: string | undefined,
+  getBase: () => string | undefined,
   clientId: string,
   files: VideoFileStore,
   requestRemote: typeof fetch = fetch,
@@ -358,7 +358,7 @@ export const createVideoDraftStore = (
     validate();
     draft.controller.signal.throwIfAborted();
     return requestApi(
-      { base, session, clientId, requestRemote, validateCurrent: validate },
+      { base: getBase(), session, clientId, requestRemote, validateCurrent: validate },
       {
         path: pathName,
         method: 'POST',
@@ -912,7 +912,7 @@ export const createVideoDraftStore = (
       const poster =
         draft.poster ??
         (await uploadImageBytes(
-          base,
+          getBase(),
           session,
           clientId,
           'poster.jpg',

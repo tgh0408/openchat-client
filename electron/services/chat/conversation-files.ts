@@ -11,17 +11,21 @@ interface CleanupDependencies {
 export const cleanupConversationFiles = async (
   root: string,
   owner: string,
+  serverHash: string,
   localPaths: string[],
   dependencies: CleanupDependencies,
 ): Promise<void> => {
-  const fileRoot = path.resolve(root, 'file', owner);
+  if (!/^[a-f0-9]{16}$/.test(serverHash) || !/^[1-9]\d{0,63}$/.test(owner))
+    throw new Error('聊天缓存所属账号无效');
+  const fileRoot = path.resolve(root, 'file', serverHash, owner);
   for (const localPath of new Set(localPaths)) {
     dependencies.validate();
     const parts = localPath.split('/');
     if (
       parts[0] !== 'file' ||
-      parts[1] !== owner ||
-      parts.length < 3 ||
+      parts[1] !== serverHash ||
+      parts[2] !== owner ||
+      parts.length < 4 ||
       parts.some(
         (part) => !part || part === '.' || part === '..' || part.includes('\\'),
       )

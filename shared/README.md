@@ -46,11 +46,11 @@
   `parse` 接收成功响应外壳，独立解析器复用 `parseApiResult`，业务层只维护 data 校验及业务状态。
   例如好友分页使用 `api.request({ path: '/capi/user/friend/page', method: 'POST', body: { pageSize, cursor }, serviceName: '好友联系人', parse: parseFriendPage })`。
   登录等公开请求以 `requestApi({ base }, options)` 调用；上传控制接口传入已绑定的 session 和 validateCurrent。
-  SSE、OSS 字节流及公开资源不使用 JSON 请求入口。认证流程见 [账号与认证](../docs/authentication.md)。
+  SSE、OSS 字节流及公开资源不使用 JSON 请求入口。具体规则见根目录 `CLAUDE.md` 的认证约定。
 
 - 优先按业务领域归档，不重新平铺到 `shared/` 根目录，也不建立混合所有业务的 `utils/` 或 `types/`。
 - 模块仍按文件直接导入，不增加聚合所有模块的 `index.ts`，避免提前加载无关代码。
-- 目录调整保留原文件名、导出名称、请求协议及校验逻辑；请求封装变动同步维护调用方及模块文档。
+- 目录调整保留原文件名、导出名称、请求协议及校验逻辑；请求封装变动同步维护调用方及隔离回归。
 - `windows/` 放独立的窗口桥接契约；与业务校验、坐标计算紧密结合的接口仍随其业务模块，不为目录分类重复定义类型。
 - `runtime/node/` 使用 Node 文件系统和进程能力，禁止渲染页面或沙箱 preload 引用；前端类型检查排除此目录，Node 类型检查仍覆盖它。
 - 由 Node 直接执行的脚本保留 `.ts` 导入扩展名，例如 `scripts/run-tool.ts` 引入 `runtime/node/local-environment.ts`。

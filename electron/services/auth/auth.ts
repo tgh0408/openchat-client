@@ -1,7 +1,10 @@
 /// <reference types="vite/client" />
 
+import { getAuthApiBase } from '../../../shared/runtime/server-settings';
+import { saveServerSettings } from '../database/database-settings';
 import {
   requestPasswordLogin,
+  parseAuthBase,
   requestRegistration,
   requestSessionValidation,
   requestUserProfile,
@@ -22,7 +25,6 @@ import {
 import type { StoredLoginAccount } from './session-storage';
 import { createSessionAccess } from './session-access';
 
-const configuredBase = import.meta.env.VITE_AUTH_API_BASE?.trim();
 const access = createSessionAccess();
 let retainedSession: AuthSession | null = null;
 const accounts = new Map<string, StoredLoginAccount>();
@@ -33,6 +35,7 @@ let pending: {
 } | null = null;
 let requestController: AbortController | undefined;
 let validationController: AbortController | undefined;
+let authGeneration = 0;
 
 /** 切换、退出或重载时取消校验，旧响应不得更改新账号。 */
 const cancelSessionValidation = (): void => {
@@ -46,22 +49,29 @@ export const validateRetainedSession = async (): Promise<SessionValidation> => {
   const session = getRetainedSession();
   if (!session) return { status: 'expired', message: '登录已过期，请重新登录' };
   const id = selectedAccountId;
+  const base = getAuthApiBase();
   const controller = new AbortController();
   validationController = controller;
   try {
     const result = await requestSessionValidation(
-      configuredBase,
+      base,
       session,
       controller.signal,
     );
     controller.signal.throwIfAborted();
     if (selectedAccountId !== id) throw new Error('账号已切换，请重试');
+    if (getAuthApiBase() !== base) throw new Error('服务器已切换，请重试');
     if (getRetainedSession()?.accessToken !== session.accessToken)
       return { status: 'expired', message: '登录已过期，请重新登录' };
     if (result.status === 'valid') {
+      saveServerSettings({
+        authApiBase: base,
+        rtcServerUrl: result.rtcServerUrl,
+      });
       const enrichedSession = {
         ...session,
         clientSqlPassword: result.clientSqlPassword,
+        rtcServerUrl: result.rtcServerUrl,
       };
       retainedSession = enrichedSession;
       const account = id ? accounts.get(id) : undefined;
@@ -100,15 +110,21 @@ export const loginWithBackend = async (
   cancelPendingLogin();
   const controller = new AbortController();
   requestController = controller;
+  const base = getAuthApiBase();
   try {
     const session = await requestPasswordLogin(
-      configuredBase,
+      base,
       credentials,
       controller.signal,
     );
     if (controller.signal.aborted) throw new Error('登录请求已取消');
-    const account = await prepareLoginAccount(session, configuredBase);
+    const account = await prepareLoginAccount(session, base);
     if (controller.signal.aborted) throw new Error('登录请求已取消');
+    if (getAuthApiBase() !== base) throw new Error('服务器已切换，请重试');
+    saveServerSettings({
+      authApiBase: base,
+      rtcServerUrl: session.rtcServerUrl,
+    });
     pending = { account, deadline: Date.now() + 60000 };
     return session;
   } finally {
@@ -125,7 +141,7 @@ export const registerWithBackend = async (
   const controller = new AbortController();
   requestController = controller;
   try {
-    await requestRegistration(configuredBase, registration, controller.signal);
+    await requestRegistration(getAuthApiBase(), registration, controller.signal);
     if (controller.signal.aborted) throw new Error('注册请求已取消');
   } finally {
     if (requestController === controller) requestController = undefined;
@@ -157,7 +173,12 @@ export const consumeLoginSession = (token: string): AuthSession => {
 
 /** 数据库初始化后恢复会话，仅供快捷入口确认，不授予内容库访问权。 */
 export const restoreSavedSession = async (): Promise<void> => {
-  const saved = await loadLoginAccounts(configuredBase);
+  const generation = authGeneration;
+  const configuredBase = getAuthApiBase();
+  const base = configuredBase ? parseAuthBase(configuredBase) : undefined;
+  const saved = await loadLoginAccounts(base);
+  if (generation !== authGeneration || configuredBase !== getAuthApiBase())
+    return;
   accounts.clear();
   for (const account of saved.accounts) accounts.set(account.id, account);
   selectedAccountId = saved.selectedAccountId;
@@ -252,6 +273,7 @@ export const setAuthenticatedSession = (session: AuthSession): void => {
 
 /** 页面重载时暂停数据访问，只在主进程内存中保留已有后端会话。 */
 export const suspendAuthenticatedSession = (): void => {
+  authGeneration++;
   cancelSessionValidation();
   cancelPendingLogin();
   retainedSession = access.current() ?? retainedSession;
@@ -274,10 +296,18 @@ export const getRetainedSession = (): AuthSession | null => {
 
 /** 仅释放内存会话，正常关闭程序时保留数据库中的加密会话。 */
 export const clearAuthenticatedSession = (): void => {
+  authGeneration++;
   cancelSessionValidation();
   cancelPendingLogin();
   access.clear();
   retainedSession = null;
+};
+
+/** 切换服务器时释放旧账号入口，数据库中的加密账号保留。 */
+export const clearServerLoginState = (): void => {
+  clearAuthenticatedSession();
+  accounts.clear();
+  selectedAccountId = null;
 };
 
 /** 内容写入和远端访问必须持有本次未过期的后端授权。 */
@@ -300,6 +330,7 @@ export const enrichSessionProfile = async (
   session: AuthSession,
   validateCurrent: () => void,
 ): Promise<AuthSession> => {
+  const base = getAuthApiBase();
   const id = selectedAccountId;
   const original = id ? accounts.get(id) : undefined;
   /** 退出、账号切换或同账号重新登录后，不允许旧资料请求恢复已清除的令牌。 */
@@ -309,7 +340,7 @@ export const enrichSessionProfile = async (
       throw new Error('账号已变化，请重试');
   };
   validate();
-  const profile = await requestUserProfile(configuredBase, session).catch(
+  const profile = await requestUserProfile(base, session).catch(
     (): null => null,
   );
   validate();
@@ -331,9 +362,9 @@ export const enrichSessionProfile = async (
         identity: await encryptProfileIdentity(
           enriched,
           profile,
-          configuredBase,
+          base,
         ),
-        session: await encryptSessionPayload(enriched, configuredBase),
+        session: await encryptSessionPayload(enriched, base),
       };
       validate();
       saveLoginAccount(encrypted, true);

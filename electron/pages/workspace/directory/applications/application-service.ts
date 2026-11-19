@@ -1,3 +1,4 @@
+import { getAuthApiBase } from '../../../../../shared/runtime/server-settings';
 import {
   requestUserInfo,
   SessionExpiredError,
@@ -9,7 +10,6 @@ import {
   saveContact,
 } from '../../../../services/database/database';
 
-const configuredBase = import.meta.env.VITE_AUTH_API_BASE?.trim();
 
 /** 按对方 UID 补齐收发申请头像，不让单条资料失败阻断整页。*/
 export const hydrateFriendApplicationPage = async (
@@ -25,7 +25,7 @@ export const hydrateFriendApplicationPage = async (
         if (cached) return { ...item, avatar: cached.avatar };
         try {
           const profile = await requestUserInfo(
-            configuredBase,
+            getAuthApiBase(),
             session,
             item.peerUid,
           );

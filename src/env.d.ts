@@ -22,7 +22,6 @@ import type {
 declare global {
   interface ImportMetaEnv {
     readonly VITE_AUTH_API_BASE?: string;
-    readonly VITE_RTC_SERVER_URL?: string;
     readonly VITE_CLIENT_ID_PC?: string;
     readonly VITE_CLIENT_ID_PHONE?: string;
     readonly VITE_CLIENT_ID_WEB?: string;

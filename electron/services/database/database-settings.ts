@@ -8,6 +8,12 @@ import type {
 } from '../../../shared/storage/database';
 import type { LogLevel } from '../../../shared/windows/settings-window';
 import { openDatabase } from './database-connection';
+import type { ServerSettings } from '../../../shared/runtime/server-settings';
+import {
+  applyServerSettings,
+  getDefaultServerSettings,
+  parseServerSettings,
+} from '../../../shared/runtime/server-settings';
 
 let settingsDatabase: Database.Database | undefined;
 
@@ -41,6 +47,11 @@ export const initializeSettingsDatabase = (directory: string): void => {
         id INTEGER PRIMARY KEY CHECK(id = 1),
         encrypted_session BLOB NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS server_preferences (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        auth_api_base TEXT NOT NULL,
+        rtc_server_url TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS login_accounts (
         id TEXT PRIMARY KEY,
         encrypted_identity BLOB NOT NULL,
@@ -54,10 +65,33 @@ export const initializeSettingsDatabase = (directory: string): void => {
     db.prepare(
       'INSERT OR IGNORE INTO local_device(id, device_id) VALUES(1, ?)',
     ).run(randomUUID());
+    const servers = db
+      .prepare(
+        'SELECT auth_api_base AS authApiBase, rtc_server_url AS rtcServerUrl FROM server_preferences WHERE id = 1',
+      )
+      .get() as ServerSettings | undefined;
+    applyServerSettings(
+      servers ? parseServerSettings(servers) : getDefaultServerSettings(),
+    );
   } catch (error) {
     closeSettingsDatabase();
     throw error;
   }
+};
+
+/** 两个地址一次写入，只有落库成功才替换运行配置。 */
+export const saveServerSettings = (value: unknown): ServerSettings => {
+  const servers = parseServerSettings(value);
+  const result = getSettingsDatabase()
+    .prepare(
+      `INSERT INTO server_preferences(id, auth_api_base, rtc_server_url) VALUES(1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET auth_api_base = excluded.auth_api_base,
+         rtc_server_url = excluded.rtc_server_url`,
+    )
+    .run(servers.authApiBase, servers.rtcServerUrl);
+  if (result.changes !== 1) throw new Error('服务地址保存失败');
+  applyServerSettings(servers);
+  return servers;
 };
 
 /** 返回全局设置连接；禁止在初始化失败时继续访问。 */

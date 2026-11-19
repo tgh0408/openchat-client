@@ -28,4 +28,4 @@
 
 hash 是渲染入口选择，不等于已经创建原生窗口或获得授权。
 子窗口使用各自受控桥接，不自行恢复登录、打开内容库或建立第二条资源 SSE。
-完整目录关系见 [项目结构](../../docs/project-structure.md)，功能说明见 [文档目录](../../docs/README.md)。
+完整目录关系见 [项目结构](../../docs/project-structure.md)，开发约定见 [CLAUDE.md](../../CLAUDE.md)。

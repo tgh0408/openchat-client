@@ -1,6 +1,9 @@
 <template>
   <section class="login-panel" aria-label="登录">
-    <div class="login-brand" :class="{ 'quick-login-brand': savedSession }">
+    <div
+      class="login-brand"
+      :class="{ 'quick-login-brand': savedSession && mode === 'password' }"
+    >
       <button
         v-if="mode === 'register' && !savedSession"
         type="button"
@@ -33,42 +36,36 @@
         @change="readBrowserAvatar"
       />
     </div>
-    <form
-      v-if="savedSession"
-      class="password-form quick-login-form"
-      @submit.prevent="enterSavedSession"
-    >
-      <LoginAccountInput
-        ref="accountInput"
-        :model-value="savedSession.user.account"
-        :accounts="accounts"
-        :disabled="blocked"
-        @select="selectAccount"
-        @update:model-value="editSavedAccount"
-      />
-      <div class="login-feedback" aria-live="polite">
-        <p v-if="storageError" class="form-error" role="alert">
-          {{ storageError }}
-        </p>
-      </div>
-      <el-button
-        class="password-submit"
-        type="primary"
-        native-type="submit"
-        :loading="authorizing"
-        :disabled="blocked"
-        >进入 OpenChat</el-button
-      >
-    </form>
-    <el-tabs
-      v-else
-      v-model="mode"
-      stretch
-      class="login-tabs"
-      @tab-change="changeMode"
-    >
+    <el-tabs v-model="mode" stretch class="login-tabs" @tab-change="changeMode">
       <el-tab-pane label="账号密码" name="password" :disabled="blocked">
-        <form class="password-form" @submit.prevent="submitPassword">
+        <form
+          v-if="savedSession"
+          class="password-form"
+          @submit.prevent="enterSavedSession"
+        >
+          <LoginAccountInput
+            ref="accountInput"
+            :model-value="savedSession.user.account"
+            :accounts="accounts"
+            :disabled="blocked"
+            @select="selectAccount"
+            @update:model-value="editSavedAccount"
+          />
+          <div class="login-feedback" aria-live="polite">
+            <p v-if="storageError" class="form-error" role="alert">
+              {{ storageError }}
+            </p>
+          </div>
+          <el-button
+            class="password-submit"
+            type="primary"
+            native-type="submit"
+            :loading="authorizing"
+            :disabled="blocked"
+            >进入 OpenChat</el-button
+          >
+        </form>
+        <form v-else class="password-form" @submit.prevent="submitPassword">
           <LoginAccountInput
             ref="accountInput"
             v-model="account"
@@ -108,7 +105,11 @@
           >
         </form>
       </el-tab-pane>
-      <el-tab-pane label="注册账号" name="register" :disabled="blocked">
+      <el-tab-pane
+        label="注册账号"
+        name="register"
+        :disabled="blocked || !!savedSession"
+      >
         <form
           class="password-form register-form"
           @submit.prevent="submitRegistration"
@@ -275,7 +276,8 @@ const account = ref(props.rememberedAccount);
 
 /** 根据当前入口显示标题，不改变已有快捷登录状态。 */
 const panelTitle = computed((): string => {
-  if (props.savedSession) return props.savedSession.user.nickname;
+  if (props.savedSession && mode.value === 'password')
+    return props.savedSession.user.nickname;
   return mode.value === 'register' ? '注册' : '登录';
 });
 
@@ -470,7 +472,7 @@ watch(
     if (previous && !value) {
       syncAccount();
       await nextTick();
-      accountInput.value?.focus();
+      if (mode.value === 'password') accountInput.value?.focus();
     }
   },
 );
@@ -561,3 +563,13 @@ const changeMode = (): void => {
 
 onBeforeUnmount(cancelLogin);
 </script>
+
+<style scoped>
+.quick-login-brand {
+  gap: 6px;
+}
+.quick-login-brand :deep(img) {
+  width: 64px;
+  height: 64px;
+}
+</style>

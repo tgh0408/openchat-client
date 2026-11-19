@@ -1,4 +1,11 @@
 import {
+  getAuthApiBase,
+  applyServerSettings,
+  getServerSettings,
+  parseServerSettings,
+  type ServerSettings,
+} from '../../../shared/runtime/server-settings';
+import {
   parseAuthBase,
   parseCredentials,
   parseRegistration,
@@ -17,7 +24,6 @@ export type {
   SavedLoginAccount,
 } from '../../../shared/auth/auth';
 
-const configuredBase = import.meta.env.VITE_AUTH_API_BASE?.trim();
 // 浏览器没有系统设备标识，沿用预览仅存内存的边界；刷新后账号也须重新登录。
 if (!window.desktop) initializeBrowserDeviceIdentity();
 const browserAccounts = new Map<
@@ -31,6 +37,27 @@ let browserValidationController: AbortController | undefined;
 const cancelBrowserValidation = (): void => {
   browserValidationController?.abort();
   browserValidationController = undefined;
+};
+
+/** 保存服务地址；浏览器预览仅更新内存并清理旧服务器授权。 */
+export const saveLoginServerSettings = async (
+  value: ServerSettings,
+): Promise<ServerSettings> => {
+  const next = parseServerSettings(value);
+  next.rtcServerUrl =
+    next.authApiBase === getAuthApiBase()
+      ? getServerSettings().rtcServerUrl
+      : '';
+  const saved = window.desktop
+    ? await window.desktop.saveServerSettings(next)
+    : next;
+  if (!window.desktop && saved.authApiBase !== getAuthApiBase()) {
+    cancelBrowserValidation();
+    browserAccounts.clear();
+    browserSelectedId = null;
+  }
+  applyServerSettings(saved);
+  return saved;
 };
 
 /** 提取业务错误，隐藏 Electron IPC 包装，不输出任何令牌。 */
@@ -70,16 +97,18 @@ export const getLoginState = async (
   if (!checkServer || !state.session) return state;
   cancelBrowserValidation();
   const controller = new AbortController();
+  const base = getAuthApiBase();
   browserValidationController = controller;
   try {
     const result = await requestSessionValidation(
-      configuredBase,
+      base,
       state.session,
       controller.signal,
     );
     controller.signal.throwIfAborted();
     if (browserSelectedId !== state.selectedAccountId)
       throw new Error('账号已切换，请重试');
+    if (getAuthApiBase() !== base) throw new Error('服务器已切换，请重试');
     if (result.status === 'expired') {
       const account = browserSelectedId
         ? browserAccounts.get(browserSelectedId)
@@ -88,6 +117,12 @@ export const getLoginState = async (
         account.session = null;
     }
     if (result.status === 'valid') {
+      applyServerSettings(
+        parseServerSettings({
+          authApiBase: base,
+          rtcServerUrl: result.rtcServerUrl,
+        }),
+      );
       const account = browserSelectedId
         ? browserAccounts.get(browserSelectedId)
         : undefined;
@@ -95,6 +130,7 @@ export const getLoginState = async (
         account.session = {
           ...account.session,
           clientSqlPassword: result.clientSqlPassword,
+          rtcServerUrl: result.rtcServerUrl,
         };
     }
     return {
@@ -144,9 +180,9 @@ export const authorizeSession = async (
 /** 配置存在不代表服务已连接；聊天页面不能据此宣称在线。 */
 export const getServerConfiguration = ():
   'missing' | 'invalid' | 'configured' => {
-  if (!configuredBase) return 'missing';
+  if (!getAuthApiBase()) return 'missing';
   try {
-    parseAuthBase(configuredBase);
+    parseAuthBase(getAuthApiBase());
     return 'configured';
   } catch {
     return 'invalid';
@@ -167,8 +203,19 @@ export const loginWithPassword = async (
 ): Promise<AuthSession> => {
   const credentials = parseCredentials({ account, password });
   signal.throwIfAborted();
-  if (!window.desktop)
-    return requestPasswordLogin(configuredBase, credentials, signal);
+  if (!window.desktop) {
+    const base = getAuthApiBase();
+    const session = await requestPasswordLogin(base, credentials, signal);
+    signal.throwIfAborted();
+    if (getAuthApiBase() !== base) throw new Error('服务器已切换，请重试');
+    applyServerSettings(
+      parseServerSettings({
+        authApiBase: base,
+        rtcServerUrl: session.rtcServerUrl,
+      }),
+    );
+    return session;
+  }
   const desktop = window.desktop;
   /** 模式切换时取消主进程请求，防止旧请求返回后留下待接收授权。 */
   const cancel = (): void => {
@@ -200,7 +247,7 @@ export const registerWithPassword = async (
   });
   signal.throwIfAborted();
   if (!window.desktop) {
-    await requestRegistration(configuredBase, registration, signal);
+    await requestRegistration(getAuthApiBase(), registration, signal);
     return;
   }
   const desktop = window.desktop;
@@ -229,7 +276,7 @@ export const logoutSession = async (): Promise<string> => {
     : undefined;
   const session = account?.session;
   if (!account || !session) return '';
-  const notice = await requestSessionLogout(configuredBase, session);
+  const notice = await requestSessionLogout(getAuthApiBase(), session);
   if (account.session === session) account.session = null;
   return notice;
 };

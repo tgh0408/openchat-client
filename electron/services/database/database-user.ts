@@ -2,7 +2,9 @@ import type Database from 'better-sqlite3';
 import { parseReplyId } from '../../../shared/chat/messages/message-reply';
 import { canDeleteMessage } from '../../../shared/chat/messages/message-deletion';
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { serverStorageHash } from '../runtime/storage-scope';
 import { openDatabase } from './database-connection';
 import { localDeviceId } from './database-settings';
 import type { HistoryWindowContext } from '../../../shared/windows/desktop';
@@ -57,6 +59,7 @@ import type {
 let contentDatabase: Database.Database | undefined;
 let dataDirectory = '';
 let ownerKey: string | null = null;
+let ownerServerHash: string | null = null;
 let imageSaved: ((message: Message) => void) | undefined;
 let messageRecalled: ((message: Message) => void) | undefined;
 let messageSaved: ((message: Message) => void) | undefined;
@@ -111,6 +114,9 @@ const initializeContentSchema = (db: Database.Database): void => {
       CREATE TABLE IF NOT EXISTS conversation_preferences (
         conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
         not_disturb INTEGER NOT NULL CHECK(not_disturb IN (0, 1))
+      );
+      CREATE TABLE IF NOT EXISTS conversation_hidden (
+        conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE
       );
       CREATE TABLE IF NOT EXISTS conversation_remote_summary (
         conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
@@ -268,13 +274,16 @@ const initializeContentSchema = (db: Database.Database): void => {
   }
 };
 
-/** 打开独立用户内容库；使用摘要文件名，不拼接外部提供的用户路径。 */
+/** 按服务器摘要与可信 UID 打开独立加密内容库。 */
 const openContent = (
+  serverHash: string,
   key: string,
   databasePassword: string,
 ): Database.Database => {
+  const directory = path.join(dataDirectory, serverHash);
+  mkdirSync(directory, { recursive: true });
   const db = openDatabase(
-    path.join(dataDirectory, `${key}.sqlite`),
+    path.join(directory, `${key}.sqlite`),
     databasePassword,
   );
   try {
@@ -321,13 +330,15 @@ export const closeUserDatabase = (): void => {
   contentDatabase?.close();
   contentDatabase = undefined;
   ownerKey = null;
+  ownerServerHash = null;
   imageSaved = undefined;
   messageRecalled = undefined;
 };
 
-/** 根据可信授权中的用户 ID 打开内容库；退出时关闭连接，不创建访客库。 */
+/** 根据可信服务器及用户 ID 切换内容库；相同 UID 的不同服务器不复用连接。 */
 export const activateProfile = (profile: LocalProfile | null): void => {
-  if (profile?.id !== ownerKey) {
+  const serverHash = profile ? serverStorageHash(profile.server) : null;
+  if (profile?.id !== ownerKey || serverHash !== ownerServerHash) {
     localHistoryRooms.clear();
     removedGroupRooms.clear();
   }
@@ -335,14 +346,16 @@ export const activateProfile = (profile: LocalProfile | null): void => {
     contentDatabase?.close();
     contentDatabase = undefined;
     ownerKey = null;
+    ownerServerHash = null;
     return;
   }
   authorizeContent?.('write', profile.id);
   const key = profile.id;
+  if (!/^[1-9]\d{0,63}$/.test(key)) throw new Error('无效的内容库所属账号');
   const next =
-    key === ownerKey
+    key === ownerKey && serverHash === ownerServerHash
       ? getContentDatabase()
-      : openContent(key, profile.databasePassword);
+      : openContent(serverHash!, key, profile.databasePassword);
   try {
     if (profile) {
       next
@@ -362,10 +375,18 @@ export const activateProfile = (profile: LocalProfile | null): void => {
   if (next !== contentDatabase) contentDatabase?.close();
   contentDatabase = next;
   ownerKey = key;
+  ownerServerHash = serverHash;
 };
 
 /** 返回当前数据空间标识，供异步文件对话框检测账号切换。 */
 export const getStorageOwner = (): string | null => ownerKey;
+
+/** 媒体及清理操作使用已打开内容库的服务器范围，不重新读取可变配置。 */
+export const getStorageServerHash = (): string => {
+  getContentDatabase('read');
+  if (!ownerServerHash) throw new Error('请先登录再访问本地数据');
+  return ownerServerHash;
+};
 
 /** 批量保存原生选择器返回的路径，返回值不向页面泄露绝对路径。 */
 export const addStoredFiles = (
@@ -670,6 +691,7 @@ export const saveRemoteConversation = (room: ChatRoom): Conversation => {
     conversation.notDisturb = requireRemoteConversation(room.roomId).notDisturb;
     if (activeAt) saveRemoteSummary(room, activeAt);
     conversation.unreadCount = reconcileConversationRead(room);
+    showConversation(room.roomId);
     return conversation;
   })();
 };
@@ -698,6 +720,23 @@ export const setConversationNotDisturb = (
        DO UPDATE SET not_disturb = excluded.not_disturb`,
     )
     .run(roomId, status);
+};
+
+/** 服务端确认隐藏后持久保存显示状态，保留消息、已读和会话偏好。 */
+export const hideConversation = (roomId: string): void => {
+  requireRemoteConversation(roomId);
+  getContentDatabase()
+    .prepare(
+      'INSERT INTO conversation_hidden(conversation_id) VALUES (?) ON CONFLICT DO NOTHING',
+    )
+    .run(roomId);
+};
+
+/** 服务端返回可见会话或指定会话详情后，只恢复该会话的显示状态。 */
+export const showConversation = (roomId: string): void => {
+  getContentDatabase()
+    .prepare('DELETE FROM conversation_hidden WHERE conversation_id = ?')
+    .run(roomId);
 };
 
 /** 分页读取当前用户的会话摘要，置顶优先再按活跃时间倒序。 */
@@ -748,6 +787,7 @@ export const listConversations = (
       SELECT id FROM messages WHERE conversation_id = c.id AND deleted_at IS NULL
       ORDER BY created_at DESC, id DESC LIMIT 1
     )
+    WHERE NOT EXISTS (SELECT 1 FROM conversation_hidden h WHERE h.conversation_id = c.id)
     ORDER BY c.is_top DESC, c.updated_at DESC, c.id DESC LIMIT ? OFFSET ?
   `,
     )
@@ -769,6 +809,8 @@ export const listUnreadConversations = (
     FROM conversations WHERE unread_count > 0 AND type IN (1, 2)
       AND NOT EXISTS (SELECT 1 FROM conversation_preferences p
         WHERE p.conversation_id = conversations.id AND p.not_disturb = 1)
+      AND NOT EXISTS (SELECT 1 FROM conversation_hidden h
+        WHERE h.conversation_id = conversations.id)
     ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?
   `,
     )
@@ -1014,6 +1056,7 @@ export const updateRemoteConversation = (
       setConversationNotDisturb(room.roomId, room.notDisturb);
     conversation.notDisturb = requireRemoteConversation(room.roomId).notDisturb;
     conversation.unreadCount = reconcileConversationRead(room);
+    showConversation(room.roomId);
     const hasRemoteSummary = saveRemoteSummary(room, activeAt);
     const latest = db
       .prepare(

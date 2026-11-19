@@ -1,3 +1,4 @@
+import { getAuthApiBase } from '../../../shared/runtime/server-settings';
 import type {
   Contact,
   Conversation,
@@ -139,7 +140,7 @@ export const createChatStore = (
   const conversations = new Map<string, Conversation>();
   const messages = new Map<string, Message>();
   const createBrowserApiClient = createApiClientFactory({
-    base: import.meta.env.VITE_AUTH_API_BASE?.trim(),
+    base: getAuthApiBase,
     clientId: PLATFORM_CLIENT_IDS.WEB,
     getSession: (): AuthSession | null => getSession?.() ?? null,
   });
@@ -768,7 +769,7 @@ export const createChatStore = (
     if (!force && cached && isContactNameFresh(cached, roomId)) return cached;
     const timestamp = new Date().toISOString();
     const profile = await requestUserInfo(
-      import.meta.env.VITE_AUTH_API_BASE?.trim(),
+      getAuthApiBase(),
       session,
       uid,
       undefined,

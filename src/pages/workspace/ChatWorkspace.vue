@@ -4,7 +4,12 @@
     :class="{
       'chat-workspace--detail':
         section === 'directory'
-          ? Boolean(selectedFriend || selectedGroup || selectedApplication)
+          ? Boolean(
+              selectedFriend ||
+              selectedGroup ||
+              selectedApplication ||
+              fileAssistantSelected,
+            )
           : Boolean(activeId),
       'chat-workspace--directory': section === 'directory',
     }"
@@ -73,6 +78,8 @@
       :groups-busy="groupsBusy"
       :error="friendsError"
       :groups-error="groupsError"
+      :file-assistant-disabled="readOnly || busy || sending"
+      :file-assistant-selected="fileAssistantSelected"
       :selected-uid="selectedFriend?.uid ?? null"
       :selected-room-id="selectedGroup?.roomId ?? null"
       :friend-unread="friendUnread"
@@ -86,6 +93,7 @@
       @applications-loaded="updateSelectedApplication"
       @select="selectFriend"
       @select-group="selectGroup"
+      @select-files="selectFiles"
     />
 
     <section class="chat-content" aria-label="聊天内容">
@@ -118,6 +126,14 @@
         :error="groupDetailError"
         @back="clearFriendSelection"
         @enter="openGroup"
+      />
+      <FileAssistantDetailPanel
+        v-else-if="section === 'directory' && fileAssistantSelected"
+        :opening="fileAssistantOpening"
+        :disabled="readOnly || !isDesktop || busy || sending"
+        :error="fileAssistantError"
+        @back="clearFriendSelection"
+        @message="openFileAssistant"
       />
       <FriendDetailPanel
         v-else-if="section === 'directory'"
@@ -456,6 +472,7 @@ import EmojiCollectionFeedback from '../../components/chat/feedback/EmojiCollect
 import ConversationSidebar from './conversations/ConversationSidebar.vue';
 import FriendDirectory from './directory/FriendDirectory.vue';
 import FriendDetailPanel from './directory/friends/FriendDetailPanel.vue';
+import FileAssistantDetailPanel from './directory/friends/FileAssistantDetailPanel.vue';
 import FriendApplicationDetail from './directory/applications/FriendApplicationDetail.vue';
 import GroupDetailPanel from './directory/groups/GroupDetailPanel.vue';
 import ChatMessageList from '../../components/chat/messages/ChatMessageList.vue';
@@ -885,6 +902,7 @@ const {
   groupsBusy,
   groupsError,
   selectedFriend,
+  fileAssistantSelected,
   selectedApplication,
   applicationsRevision,
   applicationApproving,
@@ -910,6 +928,7 @@ const {
   replySelectedApplication,
   refreshFriendDetail,
   selectFriend,
+  selectFileAssistant,
   friendBlacklisted,
   friendDeleted: removeFriendFromDirectory,
   friendAdded: addFriendToDirectory,
@@ -4076,12 +4095,87 @@ const messageRetry = createMessageRetryQueue({
   },
 });
 
-/** 导航快捷进入列表中已有的文件助手，复用普通会话读取流程。 */
-const selectFiles = async (): Promise<void> => {
-  if (busy.value || initializationFailed.value || sending.value || disposed)
+const fileAssistantOpening = ref(false);
+const fileAssistantError = ref('');
+let fileAssistantRequestVersion = 0;
+
+watch(
+  fileAssistantSelected,
+  (): void => {
+    fileAssistantRequestVersion++;
+    fileAssistantOpening.value = false;
+    fileAssistantError.value = '';
+  },
+  { flush: 'sync' },
+);
+
+/** 选择固定联系人只展示资料，点击发送消息后才打开会话。 */
+const selectFiles = (): void => {
+  if (busy.value || sending.value || disposed || props.readOnly) return;
+  if (section.value !== 'directory') showDirectory();
+  selectFileAssistant();
+};
+
+/** 用户明确发消息后定位真实房间，恢复隐藏会话并进入聊天。 */
+const openFileAssistant = async (): Promise<void> => {
+  if (
+    section.value !== 'directory' ||
+    !fileAssistantSelected.value ||
+    busy.value ||
+    sending.value ||
+    disposed ||
+    props.readOnly ||
+    fileAssistantOpening.value
+  )
     return;
-  const conversation = fileAssistantConversation.value;
-  if (conversation) await selectConversation(conversation);
+  if (!window.desktop) return;
+  const session = props.session;
+  const version = selectionVersion;
+  const requestVersion = fileAssistantRequestVersion;
+  /** 账号或用户选择变化后，不用迟到结果切走当前页面。 */
+  const isCurrent = (): boolean =>
+    !disposed &&
+    !props.readOnly &&
+    section.value === 'directory' &&
+    fileAssistantSelected.value &&
+    props.session === session &&
+    selectionVersion === version &&
+    fileAssistantRequestVersion === requestVersion;
+  fileAssistantOpening.value = true;
+  fileAssistantError.value = '';
+  try {
+    const roomId = await window.desktop.getFileAssistantRoomId();
+    if (!isCurrent()) return;
+    const conversation = await store.refreshConversationInfo(roomId);
+    if (!isCurrent()) return;
+    if (conversation.type !== FILE_ASSISTANT_TYPE)
+      throw new Error('文件助手房间类型无效');
+    conversations.value = upsertOrderedConversation(
+      conversations.value,
+      conversation,
+    );
+    setPreview(
+      conversation.id,
+      conversation.lastMessage ?? '',
+      undefined,
+      conversation.lastMessageType,
+      {
+        messageId: conversation.lastMessageId,
+        createdAt: conversation.lastMessageCreatedAt,
+      },
+    );
+    clearFriendSelection();
+    await selectConversation(conversation);
+  } catch (cause) {
+    if (isCurrent())
+      fileAssistantError.value = getAuthErrorMessage(
+        cause,
+        '打开文件助手失败，请重试',
+      );
+  } finally {
+    if (fileAssistantRequestVersion === requestVersion)
+      fileAssistantOpening.value = false;
+  }
 };
 
 /** 调用受限原生窗口操作；网页预览不模拟原生窗口状态。 */

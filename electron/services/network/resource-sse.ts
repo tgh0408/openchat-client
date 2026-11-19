@@ -1,3 +1,4 @@
+import { getAuthApiBase } from '../../../shared/runtime/server-settings';
 import { parseAuthBase, SessionExpiredError } from '../../../shared/auth/auth';
 import { readApiResponse } from '../../../shared/api/api-response';
 import { createAuthRequestHeaders } from '../../../shared/api/api-request';
@@ -15,7 +16,6 @@ import type {
   ResourceSseStatus,
 } from '../../../shared/windows/desktop';
 
-const configuredBase = import.meta.env.VITE_AUTH_API_BASE?.trim();
 const maximumRetryDelay = 30_000;
 const stableConnectionWindow = 10_000;
 const gracefulCloseTimeout = 1_500;
@@ -230,7 +230,7 @@ const runResourceSse = async (
         'Cache-Control': 'no-cache',
       };
       if (state.lastEventId) headers['Last-Event-ID'] = state.lastEventId;
-      const url = new URL(`${parseAuthBase(configuredBase)}/capi/resource/sse`);
+      const url = new URL(`${parseAuthBase(getAuthApiBase())}/capi/resource/sse`);
       url.searchParams.set('connectionType', connectionType);
       const response = await fetch(url, {
         method: 'GET',
@@ -363,7 +363,7 @@ export const closeResourceSse = (
     let acknowledged = false;
     try {
       const url = new URL(
-        `${parseAuthBase(configuredBase)}/capi/resource/sse/close`,
+        `${parseAuthBase(getAuthApiBase())}/capi/resource/sse/close`,
       );
       const response = await fetch(url, {
         method: 'GET',

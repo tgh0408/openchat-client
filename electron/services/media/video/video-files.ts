@@ -120,7 +120,11 @@ export const createVideoFileStore = (
   const capture = (): ImageFileAccess => {
     const access = captureAccess();
     const version = epoch;
-    if (!/^[1-9]\d{0,63}$/.test(access.owner)) throw new Error('视频账号无效');
+    if (
+      !/^[1-9]\d{0,63}$/.test(access.owner) ||
+      !/^[a-f0-9]{16}$/.test(access.serverHash)
+    )
+      throw new Error('视频账号无效');
     return {
       ...access,
       validateRead: (): void => {
@@ -154,21 +158,23 @@ export const createVideoFileStore = (
     createHash('sha256').update(item.url).digest('hex');
   /** 复用记录日期，跨天不重新推导旧路径。 */
   const location = (
-    owner: string,
+    access: ImageFileAccess,
     item: VideoResource,
     saved?: string,
   ): string => {
     const date = new Date();
     const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
     const name = `${keyOf(item)}${item.poster ? '.jpg' : `.${item.extension}`}`;
-    const relative = saved ?? `file/${owner}/${day}/${name}`;
+    const relative =
+      saved ?? `file/${access.serverHash}/${access.owner}/${day}/${name}`;
     const parts = relative.split('/');
     if (
-      parts.length !== 4 ||
+      parts.length !== 5 ||
       parts[0] !== 'file' ||
-      parts[1] !== owner ||
-      !/^\d{4}-\d{2}-\d{2}$/.test(parts[2]!) ||
-      parts[3] !== name
+      parts[1] !== access.serverHash ||
+      parts[2] !== access.owner ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(parts[3]!) ||
+      parts[4] !== name
     )
       throw new Error('视频缓存路径无效');
     return relative;
@@ -184,11 +190,12 @@ export const createVideoFileStore = (
     if (!saved) return null;
     const absolute = path.resolve(
       applicationRoot,
-      location(access.owner, item, saved),
+      location(access, item, saved),
     );
     try {
       await safeDirectory(root);
-      await safeDirectory(path.join(root, access.owner));
+      await safeDirectory(path.join(root, access.serverHash));
+      await safeDirectory(path.join(root, access.serverHash, access.owner));
       await safeDirectory(path.dirname(absolute));
       const file = await openVideoFile(absolute);
       try {
@@ -229,10 +236,13 @@ export const createVideoFileStore = (
     try {
       validate();
       access.validateWrite();
-      const relative = location(access.owner, item);
+      const relative = location(access, item);
       const absolute = path.resolve(applicationRoot, relative);
       await safeDirectory(root);
-      const ownerDirectory = path.join(root, access.owner);
+      const serverDirectory = path.join(root, access.serverHash);
+      await mkdir(serverDirectory, { recursive: true });
+      await safeDirectory(serverDirectory);
+      const ownerDirectory = path.join(serverDirectory, access.owner);
       await mkdir(ownerDirectory, { recursive: true });
       await safeDirectory(ownerDirectory);
       await mkdir(path.dirname(absolute), { recursive: true });
@@ -318,7 +328,7 @@ export const createVideoFileStore = (
     current();
     if (local) return local;
     access.validateWrite();
-    const key = `${epoch}:${access.owner}:${keyOf(item)}`;
+    const key = `${epoch}:${access.serverHash}:${access.owner}:${keyOf(item)}`;
     let transfer = transfers.get(key);
     if (!transfer) {
       const signal = abort.signal;

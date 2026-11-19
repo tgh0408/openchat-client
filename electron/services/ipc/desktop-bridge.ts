@@ -1,4 +1,5 @@
 import { invokeIpc } from './invoke';
+import type { ServerSettings } from '../../../shared/runtime/server-settings';
 import { parseGroupExitedNotification } from '../../../shared/contacts/group-notification';
 import { ipcRenderer, webUtils } from 'electron';
 import { parseFriendRemarkSettings } from '../../../shared/contacts/friend-remark';
@@ -220,6 +221,16 @@ const chooseFiles = async (): Promise<StoredFile[]> => {
 const getLocalSettings = async (): Promise<LocalSettings> => {
   return invoke('database:get-settings');
 };
+
+/** 读取当前有效的服务器和 LiveKit 地址。 */
+const getServerSettings = async (): Promise<ServerSettings> =>
+  invoke('server:get-settings');
+
+/** 保存登录窗口提交的地址，主进程再次校验参数与来源。 */
+const saveServerSettings = async (
+  settings: ServerSettings,
+): Promise<ServerSettings> =>
+  invoke('server:save-settings', { ...settings });
 
 /** 保存本地非敏感设置。 */
 const saveLocalSettings = async (rememberAccount: boolean): Promise<void> => {
@@ -500,6 +511,10 @@ const refreshConversationInfo = async (
 ): Promise<ConversationSummary> => {
   return invoke('chat:refresh-conversation', roomId);
 };
+
+/** 仅查询当前授权账号的文件助手，隐藏后仍可从联系人入口定位。 */
+const getFileAssistantRoomId = async (): Promise<string> =>
+  invoke('chat:file-assistant');
 
 /** 上报实际展示的消息标识，落库和一秒合并均由主进程负责。 */
 const recordConversationRead = async (
@@ -1449,6 +1464,8 @@ export const desktop: DesktopApi = {
   close: closeWindow,
   chooseFiles,
   getLocalSettings,
+  getServerSettings,
+  saveServerSettings,
   saveLocalSettings,
   saveDebugMode,
   login,
@@ -1496,6 +1513,7 @@ export const desktop: DesktopApi = {
   isImageEmojiCollected,
   listCachedEmojis,
   refreshConversationInfo,
+  getFileAssistantRoomId,
   recordConversationRead,
   removeRemoteConversation,
   hideRemoteConversation,

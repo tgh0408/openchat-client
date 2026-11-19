@@ -1,3 +1,4 @@
+import { getAuthApiBase } from '../../../shared/runtime/server-settings';
 import { createHash } from 'node:crypto';
 import type { ApiClient } from '../../../shared/api/api-client';
 import type { ImageFileStore } from '../media/image/image-files';
@@ -43,7 +44,6 @@ import type { MessageHistorySynchronizer } from './message-history';
 import { sendOutgoingMessage } from './message-send';
 import { flushConversationDeletions } from './conversation-sync';
 
-const configuredBase = import.meta.env.VITE_AUTH_API_BASE?.trim();
 
 const contactRequests = new WeakMap<
   AuthSession,
@@ -242,7 +242,7 @@ export const createChatHistory = (): MessageHistorySynchronizer => {
         const ids = listTemporaryMessageIds(roomId, afterId);
         if (!ids.length) break;
         const messages = await requestTemporaryState(
-          configuredBase,
+          getAuthApiBase(),
           session,
           getClientId(),
           roomId,
@@ -258,7 +258,7 @@ export const createChatHistory = (): MessageHistorySynchronizer => {
         const ids = listMessageStateIds(roomId, afterId);
         if (!ids.length) return;
         const messages = await requestMessageState(
-          configuredBase,
+          getAuthApiBase(),
           session,
           getClientId(),
           roomId,
@@ -300,7 +300,7 @@ export const fetchContactProfile = async (
   const request = async (): Promise<Contact> => {
     const timestamp = new Date().toISOString();
     const profile = await requestUserInfo(
-      configuredBase,
+      getAuthApiBase(),
       session,
       uid,
       undefined,

@@ -155,8 +155,9 @@ export const requestApi = async <T>(
 /** 注入运行环境的可信会话来源，不在共享层依赖 Electron 或页面状态。 */
 export interface ApiClientSource extends Omit<
   ApiRequestContext,
-  'session' | 'validateCurrent'
+  'session' | 'validateCurrent' | 'base'
 > {
+  base: string | undefined | (() => string | undefined);
   clientId: string;
   getSession: () => AuthSession | null;
 }
@@ -174,9 +175,11 @@ export interface ApiClient {
 export const createApiClientFactory = (
   source: ApiClientSource,
 ): ((validateOperation?: () => void) => ApiClient) => {
-  const { base, clientId, getSession } = source;
+  const { clientId, getSession } = source;
   /** 在操作开始时绑定授权，并保留页面、窗口及请求次序的额外校验。 */
   return (validateOperation?: () => void): ApiClient => {
+    const base =
+      typeof source.base === 'function' ? source.base() : source.base;
     const session = getSession();
     if (!session) throw new SessionExpiredError('请先登录');
     const snapshot = { ...session, user: { ...session.user } };

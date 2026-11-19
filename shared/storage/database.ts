@@ -129,8 +129,9 @@ export interface LocalSettings {
   debugMode: boolean;
 }
 
-/** 用户标识用于隔离本地数据，预览使用固定 ID，不包含登录账号或凭据。 */
+/** 主进程用可信服务器、用户标识及内存密钥打开独立内容库。 */
 export interface LocalProfile {
+  server: string;
   id: string;
   nickname: string;
   databasePassword: string;

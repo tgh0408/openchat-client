@@ -1,3 +1,4 @@
+import type { ServerSettings } from '../runtime/server-settings';
 import type {
   Contact,
   Conversation,
@@ -301,6 +302,10 @@ export interface DesktopApi
   chooseFiles: () => Promise<StoredFile[]>;
   /** 读取本地非敏感设置。 */
   getLocalSettings: () => Promise<LocalSettings>;
+  /** 读取服务地址，不包含登录凭据。 */
+  getServerSettings: () => Promise<ServerSettings>;
+  /** 仅登录窗口可保存服务地址，变更后重新选择对应服务器账号。 */
+  saveServerSettings: (settings: ServerSettings) => Promise<ServerSettings>;
   /** 保存本地非敏感设置。 */
   saveLocalSettings: (rememberAccount: boolean) => Promise<void>;
   /** 保存调试开关并立即更新主窗口开发者工具状态。 */
@@ -385,6 +390,7 @@ export interface DesktopApi
   isImageEmojiCollected: (request: ImagePreviewRequest) => Promise<boolean>;
   /** 点击会话时获取服务端详情并刷新本地摘要与未读数。 */
   refreshConversationInfo: (roomId: string) => Promise<ConversationSummary>;
+  getFileAssistantRoomId: () => Promise<string>;
   recordConversationRead: (
     roomId: string,
     messageId: string,

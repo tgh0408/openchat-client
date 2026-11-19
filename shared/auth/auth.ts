@@ -12,6 +12,7 @@ import {
   SessionExpiredError,
 } from '../api/api-error';
 import { parseApiResult } from '../api/api-response';
+import { requestRtcServerUrl } from '../rtc/rtc-config';
 export { SessionExpiredError } from '../api/api-error';
 export { parseAuthBase } from '../api/api-request';
 
@@ -47,6 +48,8 @@ export interface AuthSession {
   user: AuthUser;
   /** 用户创建时固定的本地内容库密钥，仅主进程会话保留。 */
   clientSqlPassword?: string;
+  /** 本次登录校验从后端获取的媒体地址。 */
+  rtcServerUrl?: string;
 }
 
 /** 当前页面的本地访问范围，不包含 JWT，也不能用于恢复授权。 */
@@ -76,7 +79,7 @@ export interface LoginState {
 
 /** 区分明确失效和暂时无法校验，网络异常不能删除已有 JWT。 */
 export type SessionValidation =
-  | { status: 'valid'; clientSqlPassword: string }
+  | { status: 'valid'; clientSqlPassword: string; rtcServerUrl?: string }
   | { status: 'expired' | 'unavailable'; message: string };
 
 /** 移除不应暴露给渲染进程的本地数据库密钥。 */
@@ -144,7 +147,7 @@ export const parseGlobalUidResponse = (
   return { status: 'valid', clientSqlPassword };
 };
 
-/** 携带当前 JWT 请求全局 uid；不记录令牌，也不跟随携带凭据的重定向。 */
+/** 核验当前 JWT 对应身份并获取媒体地址；配置失败不能误删已保存令牌。 */
 export const requestSessionValidation = async (
   base: string | undefined,
   session: AuthSession,
@@ -156,8 +159,9 @@ export const requestSessionValidation = async (
   )
     return { status: 'expired', message: '登录状态已失效，请重新登录' };
   parseAuthBase(base);
+  let identityValidated = false;
   try {
-    return await requestApi(
+    const result = await requestApi(
       { base, session },
       {
         path: '/capi/user/globalUid',
@@ -170,11 +174,17 @@ export const requestSessionValidation = async (
           parseGlobalUidResponse(result, session.user.id),
       },
     );
+    if (result.status !== 'valid') return result;
+    identityValidated = true;
+    const rtcServerUrl = await requestRtcServerUrl(base, session, signal);
+    signal?.throwIfAborted();
+    return { ...result, rtcServerUrl };
   } catch (error) {
     signal?.throwIfAborted();
     if (
       error instanceof SessionExpiredError ||
-      (error instanceof ApiResponseError &&
+      (!identityValidated &&
+        error instanceof ApiResponseError &&
         error.kind === 'business' &&
         error.code !== undefined &&
         error.code < 500)
@@ -478,7 +488,11 @@ export const requestPasswordLogin = async (
   );
   const validation = await requestSessionValidation(base, session, signal);
   if (validation.status !== 'valid') throw new Error(validation.message);
-  return session;
+  return {
+    ...session,
+    clientSqlPassword: validation.clientSqlPassword,
+    rtcServerUrl: validation.rtcServerUrl,
+  };
 };
 
 /** 向后端提交账号注册，不保存密码或验证码，也不自动登录。 */

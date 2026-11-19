@@ -22,6 +22,7 @@ import { validateImageForUpload } from './image-upload';
 
 export interface ImageFileAccess {
   owner: string;
+  serverHash: string;
   writable: boolean;
   validateRead: () => void;
   validateWrite: () => void;
@@ -39,6 +40,7 @@ interface ImageLocation {
   absolute: string;
   directory: string;
   ownerDirectory: string;
+  serverDirectory: string;
 }
 
 export interface ImageFileStore {
@@ -138,7 +140,10 @@ export const createImageFileStore = (
   /** 捕获授权及页面代次，任何异步步骤完成后都不能作用于新页面或新账号。 */
   const capture = (): ImageFileAccess => {
     const access = dependencies.capture();
-    if (!/^[1-9]\d{0,63}$/.test(access.owner))
+    if (
+      !/^[1-9]\d{0,63}$/.test(access.owner) ||
+      !/^[a-f0-9]{16}$/.test(access.serverHash)
+    )
       throw new Error('无效的图片所属账号');
     const version = epoch;
     /** 读取允许本次页面只读身份，但拒绝已经撤销的页面。 */
@@ -161,7 +166,7 @@ export const createImageFileStore = (
 
   /** 新文件使用落盘当天目录；已有路径须匹配账号、合法日期及资源摘要，不搬动原文件。 */
   const location = (
-    owner: string,
+    access: ImageFileAccess,
     url: string,
     saved?: string,
   ): ImageLocation => {
@@ -170,43 +175,43 @@ export const createImageFileStore = (
       ? suffix
       : '.img';
     const name = `${createHash('sha256').update(url).digest('hex')}${extension}`;
-    const relative = saved ?? `file/${owner}/${localDate(now())}/${name}`;
+    const relative =
+      saved ??
+      `file/${access.serverHash}/${access.owner}/${localDate(now())}/${name}`;
     const parts = relative.split('/');
     if (
       parts[0] !== 'file' ||
-      parts[1] !== owner ||
+      parts[1] !== access.serverHash ||
+      parts[2] !== access.owner ||
       parts.at(-1) !== name ||
-      (parts.length !== 3 && parts.length !== 4)
+      parts.length !== 5
     )
       throw new Error('图片本地路径无效');
-    if (parts.length === 4) {
-      const date = parts[2]!;
-      if (
-        !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
-        localDate(new Date(`${date}T12:00:00`)) !== date
-      )
-        throw new Error('图片本地路径日期无效');
-    }
-    const ownerDirectory = path.join(root, owner);
-    const directory =
-      parts.length === 4
-        ? path.join(ownerDirectory, parts[2]!)
-        : ownerDirectory;
+    const date = parts[3]!;
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+      localDate(new Date(`${date}T12:00:00`)) !== date
+    )
+      throw new Error('图片本地路径日期无效');
+    const serverDirectory = path.join(root, access.serverHash);
+    const ownerDirectory = path.join(serverDirectory, access.owner);
+    const directory = path.join(ownerDirectory, parts[3]!);
     return {
       relative,
       absolute: path.join(directory, name),
       directory,
       ownerDirectory,
+      serverDirectory,
     };
   };
 
   /** 暂记近期已提交位置，让跨午夜的上传与随后消息落库仍关联同一文件。 */
   const rememberLocation = (
-    owner: string,
+    access: ImageFileAccess,
     url: string,
     target: ImageLocation,
   ): void => {
-    const key = `${owner}:${url}`;
+    const key = `${access.serverHash}:${access.owner}:${url}`;
     recentLocations.delete(key);
     recentLocations.set(key, target.relative);
     if (recentLocations.size > 1000)
@@ -220,6 +225,7 @@ export const createImageFileStore = (
   ): Promise<LocalImageData | null> => {
     try {
       await requireDirectory(root);
+      await requireDirectory(target.serverDirectory);
       await requireDirectory(target.ownerDirectory);
       await requireDirectory(target.directory);
       const info = await lstat(target.absolute, { bigint: true });
@@ -273,8 +279,11 @@ export const createImageFileStore = (
   ): Promise<ImageLocation> => {
     imageData(bytes);
     validate();
-    const target = location(access.owner, url);
+    const target = location(access, url);
     await requireDirectory(root);
+    validate();
+    await mkdir(target.serverDirectory, { recursive: true });
+    await requireDirectory(target.serverDirectory);
     validate();
     await mkdir(target.ownerDirectory, { recursive: true });
     await requireDirectory(target.ownerDirectory);
@@ -299,7 +308,7 @@ export const createImageFileStore = (
       validate();
       await rename(temporary, target.absolute);
       validate();
-      rememberLocation(access.owner, url, target);
+      rememberLocation(access, url, target);
       return target;
     } finally {
       await unlink(temporary).catch((error: unknown): void => {
@@ -375,9 +384,10 @@ export const createImageFileStore = (
     );
     const url = parseImageUrl(initial.remoteUrl);
     const target = location(
-      access.owner,
+      access,
       url,
-      initial.localPath ?? recentLocations.get(`${access.owner}:${url}`),
+      initial.localPath ??
+        recentLocations.get(`${access.serverHash}:${access.owner}:${url}`),
     );
     /** 只允许继续读取同一条图片所对应的资源。 */
     const validate = (): void => {
@@ -393,7 +403,7 @@ export const createImageFileStore = (
     const local = await readLocal(target, validate);
     validate();
     if (local) {
-      rememberLocation(access.owner, url, target);
+      rememberLocation(access, url, target);
       if (initial.localPath !== target.relative && access.writable) {
         access.validateWrite();
         setMessageImageLocalPath(
@@ -407,7 +417,7 @@ export const createImageFileStore = (
     }
     if (localOnly) throw new Error('图片尚未缓存，请等待图片加载后重试');
     access.validateWrite();
-    const key = `${epoch}:${access.owner}:${url}`;
+    const key = `${epoch}:${access.serverHash}:${access.owner}:${url}`;
     let transfer = transfers.get(key);
     if (!transfer) {
       const signal = controller.signal;
@@ -418,9 +428,9 @@ export const createImageFileStore = (
           validate();
           access.validateWrite();
           const cachedTarget = location(
-            access.owner,
+            access,
             url,
-            recentLocations.get(`${access.owner}:${url}`),
+            recentLocations.get(`${access.serverHash}:${access.owner}:${url}`),
           );
           const cached = await readLocal(cachedTarget, validate);
           let committed = cachedTarget;
@@ -522,9 +532,10 @@ export const createImageFileStore = (
     );
     const url = parseImageUrl(locationData.remoteUrl);
     const saved =
-      locationData.localPath ?? recentLocations.get(`${access.owner}:${url}`);
+      locationData.localPath ??
+      recentLocations.get(`${access.serverHash}:${access.owner}:${url}`);
     if (!saved) return null;
-    const target = location(access.owner, url, saved);
+    const target = location(access, url, saved);
     access.validateRead();
     validateSource();
     const info = await inspectLocalLocation(target);

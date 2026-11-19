@@ -13,7 +13,7 @@ import type {
 } from '../../../shared/update/update';
 
 interface UpdateServiceOptions {
-  base: string | undefined;
+  base: () => string | undefined;
   currentVersion: string;
   directory: string;
 }
@@ -29,9 +29,9 @@ export const createUpdateService = ({
   /** 请求当前发布版本，只返回高于本地版本的记录。 */
   const check = async (): Promise<ClientUpdateInfo | null> => {
     const latest = await requestApi(
-      { base },
+      { base: base() },
       {
-        path: '/capi/update/public/latest',
+        path: '/capi/update/public/latest/client',
         method: 'GET',
         serviceName: '版本检查',
         parse: parseClientUpdateResponse,

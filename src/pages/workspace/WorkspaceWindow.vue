@@ -25,6 +25,7 @@ import 'element-plus/es/components/button/style/css';
 import type { AuthSession } from '../../../shared/auth/auth';
 import { logoutSession } from '../../services/auth/auth';
 import ChatWorkspace from './ChatWorkspace.vue';
+import { readServerSettings } from '../../services/storage/storage';
 
 const props = defineProps<{ initialSession?: AuthSession }>();
 const emit = defineEmits<{ loggedOut: [message?: string] }>();
@@ -103,6 +104,7 @@ const completeWorkspaceInitialization = async (): Promise<void> => {
 /** 只接收主进程已验证的授权；SSE 等待子组件完成会话初始化后再启动。 */
 const initializeWorkspace = async (): Promise<void> => {
   try {
+    await readServerSettings();
     const current = window.desktop
       ? await window.desktop.getWorkspaceSession()
       : props.initialSession;

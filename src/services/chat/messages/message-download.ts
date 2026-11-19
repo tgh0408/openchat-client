@@ -1,3 +1,4 @@
+import { getAuthApiBase } from '../../../../shared/runtime/server-settings';
 import { createApiClientFactory } from '../../../../shared/api/api-client';
 import { PLATFORM_CLIENT_IDS } from '../../../../shared/auth/client-identity';
 import {
@@ -7,7 +8,7 @@ import {
 import { getCurrentBrowserSession } from '../../auth/auth';
 
 const createBrowserApiClient = createApiClientFactory({
-  base: import.meta.env.VITE_AUTH_API_BASE?.trim(),
+  base: getAuthApiBase,
   clientId: PLATFORM_CLIENT_IDS.WEB,
   getSession: getCurrentBrowserSession,
 });

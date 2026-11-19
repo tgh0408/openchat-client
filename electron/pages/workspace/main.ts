@@ -1,3 +1,9 @@
+import {
+  getAuthApiBase,
+  getServerSettings,
+  parseServerSettings,
+} from '../../../shared/runtime/server-settings';
+import { saveServerSettings } from '../../services/database/database-settings';
 import { initializeImageOcrProvider } from '../../services/media/image/image-ocr';
 import { ApiResponseError } from '../../../shared/api/api-error';
 import { RtcAuditEvent } from '../../../shared/rtc/rtc-audit';
@@ -65,6 +71,7 @@ import type {
 } from '../../../shared/storage/database';
 import {
   activateProfile,
+  getStorageServerHash,
   acknowledgeConversationFileCleanup,
   addStoredFiles,
   backupCurrentDatabase,
@@ -99,6 +106,7 @@ import { registerDatabaseIpc } from '../../services/database/database-ipc';
 import {
   cancelPendingLogin,
   clearAuthenticatedSession,
+  clearServerLoginState,
   consumeLoginSession,
   enrichSessionProfile,
   forgetSelectedSession,
@@ -262,6 +270,7 @@ import {
   requestReplyFriendApplication,
 } from '../../../shared/contacts/friend-notification';
 import { createAuthenticatedApiClient } from '../../services/network/api-client';
+import { requestFileAssistantRoomId } from '../../../shared/chat/conversations/file-assistant';
 import type {
   ConversationReadState,
   ResourceSseStatus,
@@ -415,11 +424,17 @@ const removeConversationFiles = async (
     )
       throw new Error('页面或账号已切换');
   };
-  await cleanupConversationFiles(storageDirectory, owner, localPaths, {
-    validate,
-    referenced: isConversationFileReferenced,
-    acknowledge: acknowledgeConversationFileCleanup,
-  });
+  await cleanupConversationFiles(
+    storageDirectory,
+    owner,
+    getStorageServerHash(),
+    localPaths,
+    {
+      validate,
+      referenced: isConversationFileReferenced,
+      acknowledge: acknowledgeConversationFileCleanup,
+    },
+  );
 };
 
 /** 重连先消费本地删除操作，失败留库并限速重试，退出与重载使旧任务失效。 */
@@ -495,6 +510,43 @@ const setResourceSseStatus = (status: ResourceSseStatus): void => {
   if (reconnected) void reconcileRtcCallWindows();
   sendWindowNotification(mainWindow, 'resource:sse-status', status);
   notifyConversationStatus(status);
+};
+
+/** 捕获拖拽所属的页面、授权和消息，供准备及拖出时复核。 */
+const captureMessageDrag = (request: MessageDragRequest): (() => void) => {
+  const owner = requireAuthenticatedSession();
+  const generation = documentGeneration;
+  const source = mainWindow;
+  /** 从当前内容库核对附件类型及会话归属，拒绝撤回或删除的消息。 */
+  const readMessage = (): Message => {
+    switch (request.kind) {
+      case 'image':
+        return getImagePreviewMessage(
+          request.conversationId,
+          request.messageId,
+        );
+      case 'file':
+        return getFileMessage(request.conversationId, request.messageId);
+      case 'video':
+        return getVideoMessage(request.conversationId, request.messageId);
+    }
+  };
+  const original = readMessage();
+  /** 短期凭据绑定原页面、原授权和原消息，账号切换后不能继续导出。 */
+  const validate = (): void => {
+    if (
+      !source ||
+      source !== mainWindow ||
+      source.isDestroyed() ||
+      source.webContents.isDestroyed() ||
+      source.webContents.mainFrame.url !== getPrimaryRendererUrl() ||
+      generation !== documentGeneration ||
+      requireAuthenticatedSession() !== owner ||
+      readMessage().content !== original.content
+    )
+      throw new Error('拖拽消息或登录状态已变化');
+  };
+  return validate;
 };
 
 /** 预热原生拖拽图像，图片等比缩略，其余附件使用系统文件类型图标。 */
@@ -677,6 +729,7 @@ const activateSession = (session: AuthSession): AuthSession => {
     if (!session.clientSqlPassword?.trim())
       throw new Error('登录响应缺少本地数据库密钥');
     activateProfile({
+      server: getAuthApiBase(),
       id: session.user.id,
       nickname: session.user.nickname,
       databasePassword: session.clientSqlPassword,
@@ -845,10 +898,7 @@ const logoutCurrentSession = async (): Promise<void> => {
   stopResourceSse('logout');
   setResourceSseStatus('stopped');
   const notice = session
-    ? await requestSessionLogout(
-        import.meta.env.VITE_AUTH_API_BASE?.trim(),
-        session,
-      )
+    ? await requestSessionLogout(getAuthApiBase(), session)
     : '';
   if (
     (getActiveSession() ?? getRetainedSession()) !== session ||
@@ -909,9 +959,12 @@ const validateSender = (event: IpcMainInvokeEvent): void => {
   }
 };
 
+let savingServerSettings = false;
+
 /** 登录操作不能由工作台或独立会话窗口调用。 */
 const validateLoginSender = (event: IpcMainInvokeEvent): void => {
   validateSender(event);
+  if (savingServerSettings) throw new Error('正在保存服务地址，请稍候');
   if (mainWindowMode !== 'login' || event.sender !== mainWindow?.webContents)
     throw new Error('只允许登录窗口调用');
 };
@@ -1385,7 +1438,7 @@ const uploadImageDraft = async (
         bytes: Uint8Array,
       ): Promise<StoredImageContent> => {
         const image = await uploadImageBytes(
-          import.meta.env.VITE_AUTH_API_BASE?.trim(),
+          getAuthApiBase(),
           session,
           getClientId(),
           fileName,
@@ -1684,7 +1737,7 @@ const registerIpcHandlers = (): void => {
     voiceUploading = true;
     try {
       return await uploadVoice(
-        import.meta.env.VITE_AUTH_API_BASE?.trim(),
+        getAuthApiBase(),
         context.session,
         getClientId(),
         bytes,
@@ -1852,7 +1905,14 @@ const registerIpcHandlers = (): void => {
       path: `/capi/rtc/calls/${encodeURIComponent(parseRtcCallId(event, callId))}/token`,
       method: 'POST',
       serviceName: 'LiveKit Token',
-      parse: parseRtcJoinCredentialResponse,
+      parse: (value) => {
+        const credential = parseRtcJoinCredentialResponse(value);
+        const { rtcServerUrl } = getServerSettings();
+        return {
+          ...credential,
+          serverUrl: rtcServerUrl || credential.serverUrl,
+        };
+      },
     }),
   );
   /** 通过主进程领取或释放群视频席位。 */
@@ -2062,7 +2122,7 @@ const registerIpcHandlers = (): void => {
       const client = parseText(clientMsgId, 64);
       markVideoUploadCancelled(context.roomId, client);
       const message = await requestCancelTemporary(
-        import.meta.env.VITE_AUTH_API_BASE?.trim(),
+        getAuthApiBase(),
         context.session,
         getClientId(),
         context.roomId,
@@ -2419,7 +2479,7 @@ const registerIpcHandlers = (): void => {
       )
         throw new Error('仅首次发送的设备可以提交此视频占位');
       const message = await requestCreateTemporary(
-        import.meta.env.VITE_AUTH_API_BASE?.trim(),
+        getAuthApiBase(),
         context.session,
         getClientId(),
         context.roomId,
@@ -2443,7 +2503,7 @@ const registerIpcHandlers = (): void => {
       if (!source || source.cancelRequested || local?.clientMsgId !== client)
         throw new Error('本机上传来源不存在或已取消');
       await requestCompleteTemporary(
-        import.meta.env.VITE_AUTH_API_BASE?.trim(),
+        getAuthApiBase(),
         context.session,
         getClientId(),
         context.roomId,
@@ -2493,6 +2553,36 @@ const registerIpcHandlers = (): void => {
     validateSource: (event, request): void => {
       videoSource(event, request)();
     },
+  });
+  handleChatIpc('server:get-settings', (event) => {
+    validateDatabaseSender(event);
+    return getServerSettings();
+  });
+  handleChatIpc('server:save-settings', async (event, value: unknown) => {
+    validateLoginSender(event);
+    validateDatabaseSender(event);
+    if (getActiveSession()) throw new Error('请先退出当前账号');
+    const next = parseServerSettings(value);
+    const previousBase = getAuthApiBase();
+    next.rtcServerUrl =
+      next.authApiBase === previousBase ? getServerSettings().rtcServerUrl : '';
+    const generation = documentGeneration;
+    savingServerSettings = true;
+    try {
+      const saved = saveServerSettings(next);
+      if (previousBase !== saved.authApiBase) {
+        resetAuthentication();
+        clearServerLoginState();
+        loginNotice = '';
+        await restoreSavedSession();
+        validateDatabaseSender(event);
+        if (generation !== documentGeneration)
+          throw new Error('页面已重载，请重试');
+      }
+      return saved;
+    } finally {
+      savingServerSettings = false;
+    }
   });
   handleChatIpc('auth:login', (event, credentials: unknown) => {
     validateLoginSender(event);
@@ -2652,6 +2742,23 @@ const registerIpcHandlers = (): void => {
         throw new Error('页面或账号已切换，请重试');
     };
     return listUserFriends(validateCurrent);
+  });
+  registerRemoteHandler('chat:file-assistant', (event) => {
+    validateWorkspaceSender(event);
+    const session = requireAuthenticatedSession();
+    const generation = documentGeneration;
+    /** 固定当前工作台和账号，不允许子窗口或迟到结果切换文件助手归属。 */
+    const validateCurrent = (): void => {
+      validateWorkspaceSender(event);
+      if (
+        generation !== documentGeneration ||
+        requireAuthenticatedSession() !== session
+      )
+        throw new Error('页面或账号已切换，请重试');
+    };
+    return requestFileAssistantRoomId(
+      createAuthenticatedApiClient(validateCurrent),
+    );
   });
   for (const channel of [
     'friend-application:unread',
@@ -3794,7 +3901,7 @@ const registerIpcHandlers = (): void => {
     },
   });
   const service = createUpdateService({
-    base: import.meta.env.VITE_AUTH_API_BASE?.trim(),
+    base: getAuthApiBase,
     currentVersion: app.getVersion(),
     directory: path.join(storageDirectory, 'updates'),
   });
@@ -3994,67 +4101,44 @@ const registerIpcHandlers = (): void => {
     temporaryRoot: app.getPath('temp'),
     fileName: (request): string => {
       const { conversationId, messageId } = request;
-      const metadata =
-        request.kind === 'image'
-          ? parseImageContent(
-              getImagePreviewMessage(conversationId, messageId).content,
-            )
-          : request.kind === 'video'
-            ? parseVideoContent(
-                getVideoMessage(conversationId, messageId).content,
-              )
-            : parseFileContent(
-                getFileMessage(conversationId, messageId).content,
-              );
+      let metadata: { fileName: string } | null;
+      switch (request.kind) {
+        case 'image':
+          metadata = parseImageContent(
+            getImagePreviewMessage(conversationId, messageId).content,
+          );
+          break;
+        case 'video':
+          metadata = parseVideoContent(
+            getVideoMessage(conversationId, messageId).content,
+          );
+          break;
+        default:
+          metadata = parseFileContent(
+            getFileMessage(conversationId, messageId).content,
+          );
+          break;
+      }
       if (!metadata) throw new Error('附件名称不可用');
       return metadata.fileName;
     },
-    capture: (request): (() => void) => {
-      const owner = requireAuthenticatedSession();
-      const generation = documentGeneration;
-      const source = mainWindow;
-      /** 从当前内容库核对附件类型及会话归属，拒绝撤回或删除的消息。 */
-      const readMessage = (): Message => {
-        switch (request.kind) {
-          case 'image':
-            return getImagePreviewMessage(
-              request.conversationId,
-              request.messageId,
-            );
-          case 'file':
-            return getFileMessage(request.conversationId, request.messageId);
-          case 'video':
-            return getVideoMessage(request.conversationId, request.messageId);
-        }
-      };
-      const original = readMessage();
-      /** 短期凭据绑定原页面、原授权和原消息，账号切换后不能继续导出。 */
-      return (): void => {
-        if (
-          !source ||
-          source !== mainWindow ||
-          source.isDestroyed() ||
-          source.webContents.isDestroyed() ||
-          source.webContents.mainFrame.url !== getPrimaryRendererUrl() ||
-          generation !== documentGeneration ||
-          requireAuthenticatedSession() !== owner ||
-          readMessage().content !== original.content
-        )
-          throw new Error('拖拽消息或登录状态已变化');
-      };
-    },
-    prepare: async (request, validate): Promise<string | null> => {
+    capture: captureMessageDrag,
+    prepare: async (
+      request: MessageDragRequest,
+      validate: () => void,
+    ): Promise<string | null> => {
       validate();
-      if (request.kind === 'image') {
-        if (!imageFiles) throw new Error('图片存储尚未初始化');
-        return imageFiles.local(request, validate);
+      switch (request.kind) {
+        case 'image':
+          if (!imageFiles) throw new Error('图片存储尚未初始化');
+          return imageFiles.local(request, validate);
+        case 'file':
+          if (!attachmentFiles) throw new Error('文件存储尚未初始化');
+          return attachmentFiles.local(request, validate);
+        case 'video':
+          if (!videoFiles) throw new Error('视频存储尚未初始化');
+          return videoFiles.original(request, validate);
       }
-      if (request.kind === 'file') {
-        if (!attachmentFiles) throw new Error('文件存储尚未初始化');
-        return attachmentFiles.local(request, validate);
-      }
-      if (!videoFiles) throw new Error('视频存储尚未初始化');
-      return videoFiles.original(request, validate);
     },
     loadIcon: loadMessageDragIcon,
   });
@@ -4267,6 +4351,7 @@ const initializeLocalServices = async (): Promise<void> => {
       };
       return {
         owner: user.id,
+        serverHash: getStorageServerHash(),
         writable: !getSessionAccess().readOnly,
         validateRead,
         validateWrite,
@@ -4278,7 +4363,7 @@ const initializeLocalServices = async (): Promise<void> => {
       authorizeMessageDownload,
     );
     fileDrafts = createFileDraftStore(
-      import.meta.env.VITE_AUTH_API_BASE?.trim(),
+      getAuthApiBase,
       getClientId(),
       attachmentFiles,
     );
@@ -4290,7 +4375,7 @@ const initializeLocalServices = async (): Promise<void> => {
       authorizeMessageDownload,
     );
     videoDrafts = createVideoDraftStore(
-      import.meta.env.VITE_AUTH_API_BASE?.trim(),
+      getAuthApiBase,
       getClientId(),
       videoFiles,
       fetch,
@@ -4336,6 +4421,7 @@ const initializeLocalServices = async (): Promise<void> => {
         };
         return {
           owner: user.id,
+          serverHash: getStorageServerHash(),
           writable: !getSessionAccess().readOnly,
           validateRead,
           validateWrite,

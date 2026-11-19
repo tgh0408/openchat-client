@@ -63,6 +63,7 @@ interface ChatDirectory {
   groupsBusy: Ref<boolean>;
   groupsError: Ref<string>;
   selectedFriend: Ref<Friend | null>;
+  fileAssistantSelected: Ref<boolean>;
   selectedApplication: Ref<FriendApplication | null>;
   applicationsRevision: Ref<number>;
   applicationApproving: Ref<boolean>;
@@ -90,6 +91,7 @@ interface ChatDirectory {
   replySelectedApplication: (msg: string) => Promise<boolean>;
   refreshFriendDetail: () => Promise<void>;
   selectFriend: (friend: Friend) => void;
+  selectFileAssistant: () => void;
   friendBlacklisted: (
     uid: string,
     roomId: string,
@@ -139,6 +141,7 @@ export const useChatDirectory = (
   let groupsRequestVersion = 0;
   let groupsRefreshPending = false;
   const selectedFriend = shallowRef<Friend | null>(null);
+  const fileAssistantSelected = ref(false);
   const selectedApplication = shallowRef<FriendApplication | null>(null);
   const applicationsRevision = ref(0);
   const applicationApproving = ref(false);
@@ -267,6 +270,7 @@ export const useChatDirectory = (
   /** 清除通讯录选择，使在途详情及打开会话请求失效。 */
   const clearFriendSelection = (): void => {
     friendDetailVersion++;
+    fileAssistantSelected.value = false;
     selectedApplication.value = null;
     applicationError.value = '';
     selectedGroup.value = null;
@@ -426,6 +430,13 @@ export const useChatDirectory = (
     clearFriendSelection();
     selectedFriend.value = friend;
     void refreshFriendDetail();
+  };
+
+  /** 文件助手只展示固定资料，发消息前不恢复会话或推进已读。 */
+  const selectFileAssistant = (): void => {
+    if (isReadOnly() || isDisposed() || fileAssistantSelected.value) return;
+    clearFriendSelection();
+    fileAssistantSelected.value = true;
   };
 
   /** 只更新当前房间的已确认状态，不删除好友、聊天记录或其他房间的数据。 */
@@ -655,6 +666,7 @@ export const useChatDirectory = (
     groupsBusy,
     groupsError,
     selectedFriend,
+    fileAssistantSelected,
     selectedApplication,
     applicationsRevision,
     applicationApproving,
@@ -679,6 +691,7 @@ export const useChatDirectory = (
     replySelectedApplication,
     refreshFriendDetail,
     selectFriend,
+    selectFileAssistant,
     friendBlacklisted,
     friendDeleted,
     friendAdded,

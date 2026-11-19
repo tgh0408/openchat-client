@@ -1,3 +1,4 @@
+import { getAuthApiBase } from '../../../shared/runtime/server-settings';
 import type { AuthSession } from '../../../shared/auth/auth';
 import { parseAuthBase, SessionExpiredError } from '../../../shared/auth/auth';
 import { requestConversationRead } from '../../../shared/chat/conversations/conversation-read';
@@ -22,7 +23,7 @@ export const startConversationReads = (
 ): void => {
   stopConversationReads();
   setConversationReadServer(
-    parseAuthBase(import.meta.env.VITE_AUTH_API_BASE?.trim()),
+    parseAuthBase(getAuthApiBase()),
   );
   const api = createAuthenticatedApiClient((): void => {
     if (requireAuthenticatedSession() !== session)
